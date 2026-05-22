@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Secrets / env
+.env
+*.local.env
+!.env.example
+
+# Data cache (kept dir, ignored contents)
+data_cache/*
+!data_cache/.gitkeep
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+
+# Logs
+logs/
+*.log
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

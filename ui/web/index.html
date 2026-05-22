@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DALAL TERMINAL</title>
+  <link rel="stylesheet" href="/static/terminal.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <span class="brand">DALAL&nbsp;TERMINAL</span>
+      <span class="tagline">NSE / BSE buy-probability research terminal</span>
+      <span class="spacer"></span>
+      <span id="mode" class="badge">MODE --</span>
+      <span id="conn" class="badge badge-dim">OFFLINE</span>
+      <span id="clock" class="clock">--:--:--</span>
+    </header>
+
+    <div id="tape" class="tape">
+      <div class="tape-track" id="tape-track">
+        <span class="tape-empty">connecting to live tape&hellip;</span>
+      </div>
+    </div>
+
+    <main id="body">
+      <section class="panel output" id="output">
+        <div class="muted">booting&hellip;</div>
+      </section>
+      <aside class="panel side">
+        <div class="side-title">WATCHLIST</div>
+        <div id="watch" class="side-list"></div>
+        <div class="side-title">TOP MOVERS</div>
+        <div id="movers" class="side-list"></div>
+        <div class="side-foot">analytics &amp; research only<br>never places orders</div>
+      </aside>
+    </main>
+
+    <footer id="cmdbar">
+      <span class="prompt">&gt;</span>
+      <input id="cmd" autocomplete="off" spellcheck="false" autofocus
+             placeholder="command  —  e.g.  RELIANCE TA   |   TOP 10   |   SCAN   |   HELP">
+    </footer>
+  </div>
+  <script src="/static/terminal.js"></script>
+</body>
+</html>
