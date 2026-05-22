@@ -45,5 +45,24 @@ def test_chart_command():
     assert any(b["type"] == "spark" for b in resp["blocks"])
 
 
+def test_chart_includes_candles_block():
+    resp = _router().dispatch("TCS GP")
+    candles = [b for b in resp["blocks"] if b["type"] == "candles"]
+    assert candles and len(candles[0]["ohlc"]) > 0
+
+
+def test_fundamental_command_end_to_end():
+    resp = _router().dispatch("RELIANCE FA")
+    assert resp["ok"] is True
+    assert "FUNDAMENTAL" in resp["title"]
+    assert any(b["type"] == "disclaimer" for b in resp["blocks"])
+
+
+def test_news_command_end_to_end():
+    resp = _router().dispatch("RELIANCE N")
+    assert resp["ok"] is True
+    assert "NEWS" in resp["title"]
+
+
 def test_empty_command_is_handled():
     assert _router().dispatch("")["ok"] is False

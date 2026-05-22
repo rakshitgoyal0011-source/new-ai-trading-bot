@@ -10,9 +10,13 @@ from __future__ import annotations
 import time
 
 from analysis.composite.engine import DISCLAIMER, CompositeEngine
+from analysis.fundamental.engine import FundamentalEngine
+from analysis.sentiment.engine import SentimentEngine
 from analysis.technical import TechnicalEngine
 from config import universe
 from config.weights import SignalWeights
+from data import fundamentals as fund_data_mod
+from data import news as news_data_mod
 from data.history import HistoryService
 from data.quotes import QuoteService
 from monitoring.logging import get_logger
@@ -73,6 +77,10 @@ class CommandRouter:
         self.quotes = QuoteService(settings)
         self.tech = TechnicalEngine()
         self.composite = CompositeEngine(SignalWeights.from_settings(settings))
+        self.fund_provider = fund_data_mod.get_provider(settings)
+        self.news_provider = news_data_mod.get_provider(settings)
+        self.fund_engine = FundamentalEngine()
+        self.sent_engine = SentimentEngine(model=settings.sentiment_model)
         self.watchlist = universe.symbols()[:12]
         self.quotes.track(universe.symbols())
         self._lb_cache: list[screener.LeaderboardEntry] | None = None
@@ -171,6 +179,12 @@ class CommandRouter:
     def _chart(self, symbol: str, name: str) -> dict:
         df = self.history.candles(symbol, "day", 180)
         closes = df["close"].tolist()
+        recent = df.tail(60)
+        candles = [
+            [round(float(r.open), 2), round(float(r.high), 2),
+             round(float(r.low), 2), round(float(r.close), 2)]
+            for r in recent.itertuples()
+        ]
         last = df.iloc[-1]
         from analysis.technical import indicators as ind
 
@@ -178,7 +192,8 @@ class CommandRouter:
         e50 = ind.ema(df["close"], 50).iloc[-1]
         rsi = ind.rsi(df["close"]).iloc[-1]
         blocks = [
-            _spark(closes[-90:], f"{symbol} close - last 90 bars"),
+            {"type": "candles", "ohlc": candles,
+             "label": f"{symbol} - last 60 daily candles"},
             _keyval([
                 ("Last", round(float(last["close"]), 2)),
                 ("Open", round(float(last["open"]), 2)),
@@ -190,37 +205,128 @@ class CommandRouter:
                 ("EMA50", round(float(e50), 2)),
                 ("RSI(14)", round(float(rsi), 1)),
             ]),
+            _spark(closes[-90:], "close - last 90 bars"),
             _spark(ind.rsi(df["close"]).dropna().tolist()[-90:], "RSI(14)"),
         ]
         return _ok(f"{symbol} - PRICE & INDICATORS", blocks, subtitle=name)
 
     def _fundamental(self, symbol: str, name: str) -> dict:
-        return _ok(f"{symbol} - FUNDAMENTAL ANALYSIS", [
-            _note("Fundamental scoring is delivered in Milestone 4."),
-            _text("Will show: PE / PB / PEG vs sector, ROE / ROCE, margins,"),
-            _text("revenue & EPS growth, debt/equity, promoter pledge,"),
-            _text("a sector-relative FUNDAMENTAL SCORE (0-100) and reasons."),
-        ], subtitle=name)
+        data = self.fund_provider.fetch(symbol)
+        if not data.available:
+            return _ok(f"{symbol} - FUNDAMENTAL ANALYSIS", [
+                _note("No fundamentals available from the current provider."),
+                _text(f"provider: {self.fund_provider.name} | "
+                      f"try a different FUNDAMENTALS_PROVIDER in .env"),
+            ], subtitle=name)
+        peers_fund = [self.fund_provider.fetch(p.symbol)
+                      for p in universe.peers(symbol)]
+        res = self.fund_engine.analyze(symbol, data, peers_fund)
+
+        blocks: list[dict] = [
+            _keyval([
+                ("FUNDAMENTAL SCORE", f"{res.score} / 100"),
+                ("BIAS", res.bias.upper()),
+                ("PEERS COMPARED", res.peers_compared),
+                ("PROVIDER", self.fund_provider.name),
+            ]),
+        ]
+        if res.sub_scores:
+            blocks.append(_bars(list(res.sub_scores.items())))
+
+        pairs: list[tuple[str, str]] = []
+        for label, val, fmt in [
+            ("PE", data.pe, "{:.2f}"), ("PB", data.pb, "{:.2f}"),
+            ("PEG", data.peg, "{:.2f}"), ("ROE %", data.roe, "{:.2f}"),
+            ("ROCE %", data.roce, "{:.2f}"),
+            ("Op margin %", data.operating_margin, "{:.2f}"),
+            ("Net margin %", data.net_margin, "{:.2f}"),
+            ("Rev growth %", data.revenue_growth, "{:.2f}"),
+            ("EPS growth %", data.eps_growth, "{:.2f}"),
+            ("D/E", data.debt_to_equity, "{:.2f}"),
+            ("Div yld %", data.dividend_yield, "{:.2f}"),
+            ("Promoter %", data.promoter_holding, "{:.1f}"),
+            ("Pledge %", data.promoter_pledge, "{:.1f}"),
+        ]:
+            if val is not None:
+                pairs.append((label, fmt.format(val)))
+        if data.market_cap:
+            pairs.append(("Mkt cap (Rs.B)", f"{data.market_cap / 1e9:.1f}"))
+        if pairs:
+            blocks.append(_keyval(pairs))
+
+        if res.reasons:
+            blocks.append(_table(["why this score"], [[r] for r in res.reasons]))
+        if res.quality_flags:
+            blocks.append(_text("flags: " + " | ".join(res.quality_flags)))
+        blocks.append(_disclaimer())
+        return _ok(
+            f"{symbol} - FUNDAMENTAL ANALYSIS", blocks,
+            subtitle=f"{name} | {data.sector or 'sector ?'}"
+        )
 
     def _news(self, symbol: str, name: str) -> dict:
-        return _ok(f"{symbol} - NEWS & SENTIMENT", [
-            _note("News & sentiment scoring is delivered in Milestone 5."),
-            _text("Will show: recent headlines + corporate announcements,"),
-            _text("per-item sentiment (finance lexicon / FinBERT), material"),
-            _text("event flags and a NEWS/SENTIMENT SCORE (0-100)."),
-        ], subtitle=name)
+        items = self.news_provider.fetch(symbol, limit=10)
+        res = self.sent_engine.analyze(symbol, items)
+
+        blocks: list[dict] = [
+            _keyval([
+                ("SENTIMENT SCORE", f"{res.score} / 100"),
+                ("BIAS", res.bias.upper()),
+                ("HEADLINES", res.headline_count),
+                ("MODEL", res.model),
+                ("PROVIDER", self.news_provider.name),
+            ]),
+        ]
+        if not items:
+            blocks.append(_note(
+                "No headlines found in the news window for this symbol."))
+        else:
+            rows = []
+            for i in items[:12]:
+                date = i.published.strftime("%b %d") if i.published else "?"
+                tone = ("+" if i.sentiment or 0 > 0 else
+                        "-" if (i.sentiment or 0) < 0 else " ")
+                rows.append([date, i.source, f"{tone} {i.headline}"])
+            blocks.append(_table(["DATE", "SOURCE", "HEADLINE"], rows))
+        if res.material_events:
+            blocks.append(_text("material events:"))
+            blocks.append(_table(["headline"],
+                                  [[m] for m in res.material_events[:5]]))
+        blocks.append(_disclaimer())
+        return _ok(f"{symbol} - NEWS & SENTIMENT", blocks, subtitle=name)
 
     # --- leaderboard / screens --------------------------------------------
     def _leaderboard(self) -> list[screener.LeaderboardEntry]:
         now = time.monotonic()
         if self._lb_cache is not None and now - self._lb_ts < _LEADERBOARD_TTL:
             return self._lb_cache
+
+        # pre-fetch fundamentals once so peer comparisons are cheap
+        fund_lookup = {
+            s.symbol: self.fund_provider.fetch(s.symbol)
+            for s in universe.DEFAULT_UNIVERSE
+        }
         entries: list[screener.LeaderboardEntry] = []
         for stock in universe.DEFAULT_UNIVERSE:
             try:
                 df = self.history.candles(stock.symbol, "day", 260)
                 res = self.tech.analyze(stock.symbol, df)
-                comp = self.composite.combine(stock.symbol, res.score)
+
+                peers_fund = [
+                    fund_lookup[p.symbol]
+                    for p in universe.peers(stock.symbol)
+                    if fund_lookup.get(p.symbol) and fund_lookup[p.symbol].available
+                ]
+                fund_res = self.fund_engine.analyze(
+                    stock.symbol, fund_lookup.get(stock.symbol), peers_fund)
+                news_items = self.news_provider.fetch(stock.symbol, limit=5)
+                sent_res = self.sent_engine.analyze(stock.symbol, news_items)
+
+                comp = self.composite.combine(
+                    stock.symbol, res.score,
+                    fund_res.score if fund_res.available else None,
+                    sent_res.score if news_items else None,
+                )
                 quote = self.quotes.snapshot(stock.symbol)
                 entries.append(screener.LeaderboardEntry(
                     symbol=stock.symbol, name=stock.name, sector=stock.sector,
@@ -230,8 +336,14 @@ class CommandRouter:
                     change_pct=quote.change_pct if quote else 0.0,
                     atr=res.indicators.get("atr", 0.0),
                     top_reason=res.reasons[0] if res.reasons else "",
-                    metrics={"rsi": res.indicators.get("rsi", 50.0),
-                             "volume_ratio": res.indicators.get("volume_ratio", 1.0)},
+                    metrics={
+                        "rsi": res.indicators.get("rsi", 50.0),
+                        "volume_ratio": res.indicators.get("volume_ratio", 1.0),
+                        "fundamental_score": (
+                            fund_res.score if fund_res.available else 50.0),
+                        "sentiment_score": (
+                            sent_res.score if news_items else 50.0),
+                    },
                 ))
             except Exception as exc:
                 log.warning("leaderboard skip %s: %s", stock.symbol, exc)
@@ -264,8 +376,11 @@ class CommandRouter:
              for i, e in enumerate(rows)],
         )
         blocks = [
-            _note("Composite = technical only for now; fundamental & news "
-                  "weights activate in Milestone 4 / 5."),
+            _note(
+                "Composite = technical + fundamental + sentiment | "
+                f"providers: tech=engine, fund={self.fund_provider.name}, "
+                f"news={self.news_provider.name}"
+            ),
             table,
         ]
         if budget:

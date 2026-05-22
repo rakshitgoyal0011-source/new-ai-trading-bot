@@ -122,6 +122,72 @@
     return "";
   }
 
+  function renderCandles(b) {
+    const wrap = document.createElement("div");
+    wrap.className = "candle-wrap";
+    if (b.label) {
+      const lab = document.createElement("div");
+      lab.className = "spark-label";
+      lab.textContent = b.label;
+      wrap.appendChild(lab);
+    }
+    const data = b.ohlc || [];
+    if (!data.length) return wrap;
+    const W = 720, H = 220, padT = 6, padB = 12, padL = 36, padR = 6;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+    const highs = data.map((d) => d[1]);
+    const lows = data.map((d) => d[2]);
+    const max = Math.max.apply(null, highs);
+    const min = Math.min.apply(null, lows);
+    const span = (max - min) || 1;
+    const slot = innerW / data.length;
+    const bodyW = Math.max(2, slot * 0.65);
+    const y = (p) => padT + ((max - p) / span) * innerH;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.classList.add("candle-svg");
+    for (let i = 0; i < 4; i++) {
+      const yy = padT + (i / 3) * innerH;
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", padL); line.setAttribute("x2", W - padR);
+      line.setAttribute("y1", yy); line.setAttribute("y2", yy);
+      line.setAttribute("stroke", "#10171f");
+      line.setAttribute("stroke-width", 0.5);
+      svg.appendChild(line);
+      const label = document.createElementNS(svgNS, "text");
+      label.setAttribute("x", 2); label.setAttribute("y", yy + 3);
+      label.setAttribute("fill", "#5f7180");
+      label.setAttribute("font-size", 9);
+      label.textContent = (max - (i / 3) * span).toFixed(2);
+      svg.appendChild(label);
+    }
+    data.forEach((d, i) => {
+      const o = d[0], h = d[1], l = d[2], c = d[3];
+      const cx = padL + i * slot + slot / 2;
+      const up = c >= o;
+      const color = up ? "#2ecc71" : "#ff5247";
+      const wick = document.createElementNS(svgNS, "line");
+      wick.setAttribute("x1", cx); wick.setAttribute("x2", cx);
+      wick.setAttribute("y1", y(h)); wick.setAttribute("y2", y(l));
+      wick.setAttribute("stroke", color);
+      wick.setAttribute("stroke-width", 1);
+      svg.appendChild(wick);
+      const body = document.createElementNS(svgNS, "rect");
+      const top = Math.min(y(o), y(c));
+      body.setAttribute("x", cx - bodyW / 2);
+      body.setAttribute("y", top);
+      body.setAttribute("width", bodyW);
+      body.setAttribute("height", Math.max(1, Math.abs(y(o) - y(c))));
+      body.setAttribute("fill", color);
+      svg.appendChild(body);
+    });
+    wrap.appendChild(svg);
+    return wrap;
+  }
+
   function renderBlock(b) {
     const el = document.createElement("div");
     el.className = "blk";
@@ -165,6 +231,8 @@
     } else if (b.type === "spark") {
       el.innerHTML = (b.label ? '<div class="spark-label">' + esc(b.label) +
         "</div>" : "") + '<div class="spark">' + sparkline(b.data) + "</div>";
+    } else if (b.type === "candles") {
+      el.appendChild(renderCandles(b));
     } else {
       el.className += " blk-text";
       el.textContent = JSON.stringify(b);

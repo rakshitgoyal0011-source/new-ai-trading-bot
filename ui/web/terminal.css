@@ -141,6 +141,11 @@ table.blk-table td {
 
 .spark { font-size: 15px; letter-spacing: 1px; line-height: 1; }
 .spark-label { color: var(--dim); font-size: 11px; margin-bottom: 1px; }
+.candle-wrap { margin: 4px 0; }
+.candle-svg {
+  width: 100%; height: 220px; display: block;
+  background: #04060a; border: 1px solid var(--border);
+}
 
 .up   { color: var(--up); }
 .down { color: var(--down); }
