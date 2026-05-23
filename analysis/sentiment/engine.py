@@ -69,7 +69,13 @@ class SentimentEngine:
         scorer: Callable[[str], float] | None = None,
     ):
         self.model = model
-        self.scorer = scorer or lexicon_score
+        if scorer is not None:
+            self.scorer = scorer
+        elif model == "finbert":
+            from analysis.sentiment.finbert import finbert_scorer
+            self.scorer = finbert_scorer
+        else:
+            self.scorer = lexicon_score
 
     def analyze(self, symbol: str, items=None) -> SentimentResult:
         items = list(items or [])

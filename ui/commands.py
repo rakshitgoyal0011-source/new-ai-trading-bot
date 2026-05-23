@@ -15,6 +15,7 @@ from analysis.sentiment.engine import SentimentEngine
 from analysis.technical import TechnicalEngine
 from config import universe
 from config.weights import SignalWeights
+from data import calendar as calendar_mod
 from data import fundamentals as fund_data_mod
 from data import news as news_data_mod
 from data.history import HistoryService
@@ -79,6 +80,7 @@ class CommandRouter:
         self.composite = CompositeEngine(SignalWeights.from_settings(settings))
         self.fund_provider = fund_data_mod.get_provider(settings)
         self.news_provider = news_data_mod.get_provider(settings)
+        self.cal_provider = calendar_mod.get_provider(settings)
         self.fund_engine = FundamentalEngine()
         self.sent_engine = SentimentEngine(model=settings.sentiment_model)
         self.watchlist = universe.symbols()[:12]
@@ -109,6 +111,8 @@ class CommandRouter:
                 return self._heat()
             if head == "KITE":
                 return self._kite()
+            if head == "CAL":
+                return self._calendar_all(parts[1:])
             if len(parts) >= 2:
                 return self._ticker(parts[0].upper(), parts[1].upper(), parts[2:])
             return _err(f"unrecognised command: {raw!r}")
@@ -118,7 +122,7 @@ class CommandRouter:
 
     # --- ticker commands ---------------------------------------------------
     def _ticker(self, symbol: str, verb: str, args: list[str]) -> dict:
-        if verb in ("TA", "GP", "FA", "N"):
+        if verb in ("TA", "GP", "FA", "N", "CAL"):
             stock = universe.get(symbol)
             name = stock.name if stock else symbol
             if verb == "TA":
@@ -129,7 +133,9 @@ class CommandRouter:
                 return self._fundamental(symbol, name)
             if verb == "N":
                 return self._news(symbol, name)
-        return _err(f"unknown action {verb!r} - try TA / GP / FA / N")
+            if verb == "CAL":
+                return self._calendar_symbol(symbol, name, args)
+        return _err(f"unknown action {verb!r} - try TA / GP / FA / N / CAL")
 
     def _score_symbol(self, symbol: str, technical_score: float):
         """Compute the live composite (tech + fund + sent) for one symbol.
@@ -654,11 +660,127 @@ class CommandRouter:
             "Auth flow:  GET /kite/login  ->  /kite/callback?request_token=..."))
         return _ok("KITE - CONNECTION DIAGNOSTIC", blocks)
 
+    # --- calendar ----------------------------------------------------------
+    def _calendar_symbol(
+        self, symbol: str, name: str, args: list[str]
+    ) -> dict:
+        days = self._parse_days(args, default=30)
+        events = self.cal_provider.fetch(symbol, horizon_days=days)
+        if not events:
+            return _ok(
+                f"{symbol} - CALENDAR",
+                [_note(f"no events in the next {days} days for {symbol}."),
+                 _text(f"provider: {self.cal_provider.name}")],
+                subtitle=name,
+            )
+        rows = [
+            [e.date.strftime("%b %d"), e.days_away,
+             e.event_type.replace("_", " "), e.description]
+            for e in events
+        ]
+        return _ok(f"{symbol} - CALENDAR ({days}d)", [
+            _table(["DATE", "AWAY", "TYPE", "DETAIL"], rows),
+            _text(f"provider: {self.cal_provider.name}"),
+            _disclaimer(),
+        ], subtitle=name)
+
+    def _calendar_all(self, args: list[str]) -> dict:
+        days = self._parse_days(args, default=14)
+        pairs = []
+        for stock in universe.DEFAULT_UNIVERSE:
+            try:
+                events = self.cal_provider.fetch(
+                    stock.symbol, horizon_days=days)
+            except Exception as exc:
+                log.warning("CAL skip %s: %s", stock.symbol, exc)
+                continue
+            for ev in events:
+                pairs.append((stock, ev))
+        if not pairs:
+            return _ok("CALENDAR - UPCOMING EVENTS", [
+                _note(f"no events scheduled in the next {days} days."),
+                _text(f"provider: {self.cal_provider.name}"),
+            ])
+        pairs.sort(key=lambda pair: pair[1].date)
+        rows = [
+            [ev.date.strftime("%b %d"), ev.days_away, stock.symbol,
+             stock.sector, ev.event_type.replace("_", " "), ev.description]
+            for stock, ev in pairs[:60]
+        ]
+        return _ok(f"CALENDAR - UPCOMING EVENTS ({days}d)", [
+            _table(["DATE", "AWAY", "SYM", "SECTOR", "TYPE", "DETAIL"], rows),
+            _text(f"provider: {self.cal_provider.name}"),
+            _disclaimer(),
+        ], subtitle=f"{len(pairs)} events")
+
+    @staticmethod
+    def _parse_days(args: list[str], default: int) -> int:
+        for a in args:
+            if a.upper().startswith("DAYS="):
+                try:
+                    return int(a.split("=", 1)[1])
+                except ValueError:
+                    pass
+        return default
+
     # --- backtest / calibration -------------------------------------------
     def _bt(self, args: list[str]) -> dict:
         if args and args[0].upper() == "FIT":
             return self._bt_fit(args[1:])
+        if args and args[0].upper() == "WALK":
+            return self._bt_walk(args[1:])
         return self._bt_status()
+
+    def _bt_walk(self, args: list[str]) -> dict:
+        params = {"horizon": 10, "train": 1000, "test": 200, "step": 200}
+        for a in args:
+            for key in ("HORIZON", "TRAIN", "TEST", "STEP"):
+                if a.upper().startswith(key + "="):
+                    try:
+                        params[key.lower()] = int(a.split("=", 1)[1])
+                    except ValueError:
+                        pass
+        from backtest.walkforward import run_walk_forward
+
+        try:
+            report = run_walk_forward(
+                self.settings,
+                horizon_bars=params["horizon"],
+                train_size=params["train"],
+                test_size=params["test"],
+                step=params["step"],
+            )
+        except Exception as exc:
+            log.exception("walk-forward failed")
+            return _err(f"walk-forward failed: {exc}")
+        # hot-reload the calibrator in the running composite engine
+        self.composite.calibrator = report.final_calibrator
+        self._lb_cache = None
+
+        cal = report.final_calibrator
+        return _ok("WALK-FORWARD CALIBRATION", [
+            _keyval([
+                ("HORIZON (bars)", report.horizon_bars),
+                ("POINTS", report.n_points),
+                ("FOLDS", report.fold_count),
+                ("LIFT FOLDS", f"{report.lift_folds}/{report.fold_count}"),
+                ("STABLE LIFT?", "YES - probability exposed"
+                 if report.stable_lift else "no - probability suppressed"),
+                ("avg Brier (test)", round(report.avg_brier_test, 4)),
+                ("avg Brier base", round(report.avg_brier_baseline, 4)),
+                ("avg AUC (test)", round(report.avg_auc_test, 3)),
+                ("avg ECE (test)", round(report.avg_ece_test, 4)),
+            ]),
+            _text(cal.lift_note if cal else ""),
+            _table(
+                ["FOLD", "N_TRAIN", "N_TEST", "BRIER", "BASE", "AUC", "ECE", "LIFT"],
+                [[f.fold, f.n_train, f.n_test, round(f.brier_test, 4),
+                  round(f.brier_baseline, 4), round(f.auc_test, 3),
+                  round(f.ece_test, 4), "yes" if f.has_lift else "no"]
+                 for f in report.folds],
+            ),
+            _disclaimer(),
+        ])
 
     def _bt_status(self) -> dict:
         from backtest.calibration import DEFAULT_CALIBRATOR_PATH, Calibrator
@@ -739,11 +861,12 @@ class CommandRouter:
                 ["<TICKER> GP", "price chart (sparkline) + key indicators"],
                 ["<TICKER> FA", "fundamental snapshot (sector-relative)"],
                 ["<TICKER> N", "latest news + sentiment score"],
+                ["<TICKER> CAL  |  CAL [DAYS=n]", "upcoming results / ex-div / meetings"],
                 ["TOP [n] [SECTOR=x] [BUDGET=n]", "ranked buy-probability board"],
                 ["HEAT", "sector composite heat-map"],
                 ["SCAN [key]", "list / run prebuilt screeners"],
                 ["WATCH [a,b,c] | SAVE/LOAD/LIST", "live watchlist tape + persistence"],
-                ["BT [FIT]", "calibration report / fit a calibrator"],
+                ["BT [FIT|WALK]", "calibration report / single fit / walk-forward"],
                 ["KITE", "data-provider + Kite connection diagnostic"],
                 ["RULES", "risk & discipline checklist"],
                 ["HELP", "this reference"],
