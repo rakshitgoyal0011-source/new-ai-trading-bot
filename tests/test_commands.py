@@ -81,3 +81,53 @@ def test_help_mentions_bt():
     resp = _router().dispatch("HELP")
     table = next(b for b in resp["blocks"] if b["type"] == "table")
     assert any("BT" in row[0] for row in table["rows"])
+
+
+def test_help_mentions_heat_and_kite():
+    resp = _router().dispatch("HELP")
+    table = next(b for b in resp["blocks"] if b["type"] == "table")
+    cmds = [row[0] for row in table["rows"]]
+    assert any("HEAT" in c for c in cmds)
+    assert any("KITE" in c for c in cmds)
+
+
+def test_heat_command_returns_heatmap_block():
+    resp = _router().dispatch("HEAT")
+    assert resp["ok"] is True
+    heat = [b for b in resp["blocks"] if b["type"] == "heatmap"]
+    assert heat and len(heat[0]["sectors"]) > 0
+    sec = heat[0]["sectors"][0]
+    assert "name" in sec and "avg" in sec and "cells" in sec
+
+
+def test_kite_command_shows_diagnostic_keyval():
+    resp = _router().dispatch("KITE")
+    assert resp["ok"] is True
+    kv = next(b for b in resp["blocks"] if b["type"] == "keyval")
+    keys = [p[0] for p in kv["pairs"]]
+    assert "MODE" in keys
+    assert "HISTORY_PROVIDER" in keys
+
+
+def test_watch_save_load_roundtrip(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    r = _router()
+    r.watchlist = ["RELIANCE", "TCS"]
+    assert r.dispatch("WATCH SAVE morning")["ok"] is True
+    r.watchlist = ["INFY"]
+    assert r.dispatch("WATCH LOAD morning")["ok"] is True
+    assert r.watchlist == ["RELIANCE", "TCS"]
+    listed = r.dispatch("WATCH LIST")
+    assert listed["ok"] is True
+    table = next(b for b in listed["blocks"] if b["type"] == "table")
+    assert any("morning" in row[0] for row in table["rows"])
+
+
+def test_top_budget_includes_cost_columns():
+    resp = _router().dispatch("TOP 5 BUDGET=100000")
+    assert resp["ok"] is True
+    tables = [b for b in resp["blocks"] if b["type"] == "table"]
+    plan = next(t for t in tables
+                if "OUTLAY" in t["headers"])
+    assert "RT COST" in plan["headers"]
+    assert "COST %" in plan["headers"]

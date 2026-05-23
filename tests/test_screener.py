@@ -42,8 +42,74 @@ def test_scan_volume_spike():
     assert [e.symbol for e in hits] == ["A"]
 
 
-def test_pending_scan_returns_empty():
-    assert run_scan("value", _entries()) == []
+def test_all_scans_are_now_ready_after_m6():
+    from screener.screener import SCANS
+    assert all(s.ready for s in SCANS)
+
+
+def test_value_scan_uses_fundamental_metric():
+    e1 = LeaderboardEntry(
+        "A", sector="IT", composite_score=70.0, technical_score=70.0,
+        ltp=100.0, atr=1.0,
+        metrics={"fundamental_score": 75.0, "sentiment_score": 50.0,
+                 "gap_pct": 0.0, "from_52w_high_pct": 50.0, "atr_pct": 1.0},
+    )
+    e2 = LeaderboardEntry(
+        "B", sector="IT", composite_score=70.0, technical_score=70.0,
+        ltp=100.0, atr=1.0,
+        metrics={"fundamental_score": 50.0, "sentiment_score": 50.0,
+                 "gap_pct": 0.0, "from_52w_high_pct": 50.0, "atr_pct": 1.0},
+    )
+    assert [e.symbol for e in run_scan("value", [e1, e2])] == ["A"]
+
+
+def test_gap_up_scan():
+    e1 = LeaderboardEntry(
+        "A", composite_score=60.0, technical_score=70.0,
+        metrics={"gap_pct": 3.5, "from_52w_high_pct": 50.0, "atr_pct": 1.0},
+    )
+    e2 = LeaderboardEntry(
+        "B", composite_score=60.0, technical_score=70.0,
+        metrics={"gap_pct": 1.0, "from_52w_high_pct": 50.0, "atr_pct": 1.0},
+    )
+    e3 = LeaderboardEntry(
+        "C", composite_score=60.0, technical_score=40.0,
+        metrics={"gap_pct": 3.5, "from_52w_high_pct": 50.0, "atr_pct": 1.0},
+    )
+    assert [e.symbol for e in run_scan("gap_up", [e1, e2, e3])] == ["A"]
+
+
+def test_near_52w_high_scan():
+    e1 = LeaderboardEntry(
+        "A", bias="bullish", composite_score=70.0,
+        metrics={"from_52w_high_pct": 97.0, "atr_pct": 1.0, "gap_pct": 0.0},
+    )
+    e2 = LeaderboardEntry(
+        "B", bias="bullish", composite_score=70.0,
+        metrics={"from_52w_high_pct": 80.0, "atr_pct": 1.0, "gap_pct": 0.0},
+    )
+    e3 = LeaderboardEntry(
+        "C", bias="bearish", composite_score=70.0,
+        metrics={"from_52w_high_pct": 99.0, "atr_pct": 1.0, "gap_pct": 0.0},
+    )
+    assert [e.symbol for e in run_scan("near_52w_high", [e1, e2, e3])] == ["A"]
+
+
+def test_low_vol_uptrend_scan():
+    e1 = LeaderboardEntry(
+        "A", trend="uptrend", technical_score=70.0,
+        metrics={"atr_pct": 1.5, "from_52w_high_pct": 50.0, "gap_pct": 0.0},
+    )
+    e2 = LeaderboardEntry(
+        "B", trend="uptrend", technical_score=70.0,
+        metrics={"atr_pct": 4.0, "from_52w_high_pct": 50.0, "gap_pct": 0.0},
+    )
+    e3 = LeaderboardEntry(
+        "C", trend="sideways", technical_score=70.0,
+        metrics={"atr_pct": 1.5, "from_52w_high_pct": 50.0, "gap_pct": 0.0},
+    )
+    out = run_scan("low_vol_uptrend", [e1, e2, e3])
+    assert [e.symbol for e in out] == ["A"]
 
 
 def test_budget_picks_produce_trade_plans():

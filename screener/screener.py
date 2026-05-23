@@ -91,6 +91,25 @@ SCANS: list[Scan] = [
              e.metrics.get("rsi", 50) < 40
              and e.metrics.get("fundamental_score", 50) >= 60
          )),
+    Scan("gap_up", "Gap up",
+         "open >= 2% above prior close with technical strength", True,
+         lambda e: (
+             e.metrics.get("gap_pct", 0.0) >= 2.0
+             and e.technical_score >= 50
+         )),
+    Scan("near_52w_high", "Near 52-week high",
+         "trading within 5% of the 52-week high with a bullish bias", True,
+         lambda e: (
+             e.metrics.get("from_52w_high_pct", 0.0) >= 95.0
+             and e.bias == "bullish"
+         )),
+    Scan("low_vol_uptrend", "Low-volatility uptrend",
+         "confirmed uptrend with ATR/price <= 2% (calm compounders)", True,
+         lambda e: (
+             e.trend == "uptrend"
+             and e.metrics.get("atr_pct", 99.0) <= 2.0
+             and e.technical_score >= 55
+         )),
 ]
 
 _SCAN_BY_KEY = {s.key: s for s in SCANS}

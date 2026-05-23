@@ -122,6 +122,43 @@
     return "";
   }
 
+  function heatColor(score) {
+    // 0 -> red, 50 -> amber, 100 -> green; smooth ramp
+    const s = Math.max(0, Math.min(100, score));
+    const r = s < 50 ? 255 : Math.round(255 - (s - 50) * 5.1);
+    const g = s < 50 ? Math.round(s * 5.1) : 200;
+    return "rgb(" + r + "," + g + ",40)";
+  }
+
+  function renderHeatmap(b) {
+    const wrap = document.createElement("div");
+    wrap.className = "heat-wrap";
+    (b.sectors || []).forEach((sec) => {
+      const row = document.createElement("div");
+      row.className = "heat-row";
+      const label = document.createElement("div");
+      label.className = "heat-label";
+      label.textContent = sec.name + "  avg " + sec.avg;
+      row.appendChild(label);
+      const cells = document.createElement("div");
+      cells.className = "heat-cells";
+      (sec.cells || []).forEach((c) => {
+        const cell = document.createElement("div");
+        cell.className = "heat-cell";
+        cell.style.background = heatColor(c.score);
+        cell.innerHTML =
+          '<div class="heat-sym">' + esc(c.symbol) + "</div>" +
+          '<div class="heat-score">' + c.score + "</div>";
+        cell.title = c.symbol + " | composite " + c.score +
+          " | chg " + c.change_pct + "%";
+        cells.appendChild(cell);
+      });
+      row.appendChild(cells);
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
   function renderCandles(b) {
     const wrap = document.createElement("div");
     wrap.className = "candle-wrap";
@@ -233,6 +270,8 @@
         "</div>" : "") + '<div class="spark">' + sparkline(b.data) + "</div>";
     } else if (b.type === "candles") {
       el.appendChild(renderCandles(b));
+    } else if (b.type === "heatmap") {
+      el.appendChild(renderHeatmap(b));
     } else {
       el.className += " blk-text";
       el.textContent = JSON.stringify(b);

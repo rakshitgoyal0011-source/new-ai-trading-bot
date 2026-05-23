@@ -105,6 +105,10 @@ class CommandRouter:
                 return self._watch(parts[1:])
             if head == "BT":
                 return self._bt(parts[1:])
+            if head == "HEAT":
+                return self._heat()
+            if head == "KITE":
+                return self._kite()
             if len(parts) >= 2:
                 return self._ticker(parts[0].upper(), parts[1].upper(), parts[2:])
             return _err(f"unrecognised command: {raw!r}")
@@ -359,13 +363,24 @@ class CommandRouter:
                     sent_res.score if news_items else None,
                 )
                 quote = self.quotes.snapshot(stock.symbol)
+                ltp = quote.ltp if quote else float(res.indicators.get("close", 0.0))
+                atr = float(res.indicators.get("atr", 0.0))
+                atr_pct = (atr / ltp * 100.0) if ltp > 0 else 0.0
+                high52 = float(df["high"].tail(252).max()) if len(df) else 0.0
+                from_high = (ltp / high52 * 100.0) if high52 > 0 else 0.0
+                gap_pct = 0.0
+                if len(df) >= 2:
+                    prev_close = float(df.iloc[-2]["close"])
+                    today_open = float(df.iloc[-1]["open"])
+                    if prev_close > 0:
+                        gap_pct = (today_open - prev_close) / prev_close * 100.0
                 entries.append(screener.LeaderboardEntry(
                     symbol=stock.symbol, name=stock.name, sector=stock.sector,
                     composite_score=comp.composite_score,
                     technical_score=res.score, bias=comp.bias, trend=res.trend,
-                    ltp=quote.ltp if quote else res.indicators.get("close", 0.0),
+                    ltp=ltp,
                     change_pct=quote.change_pct if quote else 0.0,
-                    atr=res.indicators.get("atr", 0.0),
+                    atr=atr,
                     top_reason=res.reasons[0] if res.reasons else "",
                     metrics={
                         "rsi": res.indicators.get("rsi", 50.0),
@@ -374,6 +389,9 @@ class CommandRouter:
                             fund_res.score if fund_res.available else 50.0),
                         "sentiment_score": (
                             sent_res.score if news_items else 50.0),
+                        "gap_pct": round(gap_pct, 2),
+                        "from_52w_high_pct": round(from_high, 2),
+                        "atr_pct": round(atr_pct, 2),
                     },
                     calibrated_probability=comp.calibrated_probability,
                 ))
@@ -437,15 +455,30 @@ class CommandRouter:
             cal_note += " | calibrator: not fit yet - run BT FIT"
         blocks = [_note(cal_note), table]
         if budget:
+            from backtest.backtest import CostModel
+
+            cost_model = CostModel()
             blocks.append(_text(f"--- budget plan for Rs.{budget:,.0f} "
                                 f"({self.settings.risk_per_trade_pct}% risk/trade) ---"))
             picks = screener.budget_picks(
                 rows, budget, risk_pct=self.settings.risk_per_trade_pct)
+            plan_rows = []
+            for e, p in picks:
+                target1 = p.targets[0] if p.targets else e.ltp
+                outlay = p.position_value
+                exit_value = target1 * p.shares
+                rt_cost = cost_model.round_trip(outlay, exit_value)
+                rt_pct = (rt_cost / outlay * 100.0) if outlay > 0 else 0.0
+                plan_rows.append([
+                    e.symbol, p.entry, p.stop,
+                    "/".join(str(t) for t in p.targets), p.reward_risk,
+                    p.shares, outlay, f"{rt_cost:.0f}", f"{rt_pct:.2f}%",
+                ])
             blocks.append(_table(
-                ["SYM", "ENTRY", "STOP", "T1/T2/T3", "R:R", "SHARES", "OUTLAY"],
-                [[e.symbol, p.entry, p.stop,
-                  "/".join(str(t) for t in p.targets), p.reward_risk,
-                  p.shares, p.position_value] for e, p in picks]))
+                ["SYM", "ENTRY", "STOP", "T1/T2/T3", "R:R", "SHARES",
+                 "OUTLAY", "RT COST", "COST %"],
+                plan_rows,
+            ))
         blocks.append(_disclaimer())
         return _ok("TOP - BUY-PROBABILITY LEADERBOARD", blocks,
                    subtitle=f"{len(rows)} stocks"
@@ -480,8 +513,11 @@ class CommandRouter:
         ])
 
     def _watch(self, args: list[str]) -> dict:
+        if args and args[0].upper() in ("SAVE", "LOAD", "LIST"):
+            return self._watch_persist(args)
         if args:
-            syms = [s.strip().upper() for s in " ".join(args).replace(",", " ").split()]
+            syms = [s.strip().upper() for s in
+                    " ".join(args).replace(",", " ").split()]
             self.watchlist = [s for s in syms if s]
         rows = []
         for sym in self.watchlist:
@@ -493,8 +529,130 @@ class CommandRouter:
                          f"{q.change_pct:+.2f}%", arrow])
         return _ok("WATCH - LIVE WATCHLIST", [
             _table(["SYM", "LTP", "CHG", "CHG%", ""], rows),
-            _text("set your own:  WATCH RELIANCE,TCS,INFY"),
+            _text("set:  WATCH RELIANCE,TCS,INFY   |   "
+                  "save:  WATCH SAVE <name>   |   load:  WATCH LOAD <name>"),
         ], subtitle=f"{len(rows)} symbols")
+
+    def _watch_persist(self, args: list[str]) -> dict:
+        import json
+        from pathlib import Path
+
+        base = Path("runs/watchlists")
+        op = args[0].upper()
+        if op == "LIST":
+            base.mkdir(parents=True, exist_ok=True)
+            names = sorted(p.stem for p in base.glob("*.json"))
+            if not names:
+                return _ok("WATCH - SAVED LISTS",
+                           [_note("no saved watchlists yet")])
+            return _ok("WATCH - SAVED LISTS", [
+                _table(["NAME"], [[n] for n in names]),
+                _text("load with:  WATCH LOAD <name>"),
+            ])
+        if len(args) < 2:
+            return _err(f"WATCH {op} needs a name")
+        name = args[1].strip().lower()
+        safe = "".join(c for c in name if c.isalnum() or c in "-_")
+        if not safe:
+            return _err(f"invalid name {name!r}")
+        path = base / f"{safe}.json"
+        if op == "SAVE":
+            base.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"symbols": self.watchlist}, indent=2))
+            return _ok("WATCH - SAVED", [
+                _text(f"saved {len(self.watchlist)} symbols to {path}")
+            ])
+        if op == "LOAD":
+            if not path.exists():
+                return _err(f"no watchlist named {safe!r}")
+            data = json.loads(path.read_text())
+            self.watchlist = list(data.get("symbols", []))
+            return self._watch([])
+        return _err(f"unknown WATCH op {op!r}")
+
+    # --- heatmap / kite diagnostic ----------------------------------------
+    def _heat(self) -> dict:
+        rows = self._leaderboard()
+        if not rows:
+            return _err("no leaderboard data available")
+        by_sector: dict[str, list[screener.LeaderboardEntry]] = {}
+        for e in rows:
+            by_sector.setdefault(e.sector or "?", []).append(e)
+        sectors_out = []
+        for sec, items in by_sector.items():
+            items.sort(key=lambda x: x.composite_score, reverse=True)
+            avg = sum(x.composite_score for x in items) / len(items)
+            cells = [{
+                "symbol": x.symbol,
+                "score": round(x.composite_score, 1),
+                "change_pct": round(x.change_pct, 2),
+            } for x in items]
+            sectors_out.append({"name": sec, "avg": round(avg, 1), "cells": cells})
+        sectors_out.sort(key=lambda s: s["avg"], reverse=True)
+        return _ok("HEAT - SECTOR HEATMAP", [
+            _note("Composite score 0-100 per stock, grouped by sector. "
+                  "Greener = stronger."),
+            {"type": "heatmap", "sectors": sectors_out},
+            _disclaimer(),
+        ], subtitle=(
+            f"{len(sectors_out)} sectors | "
+            f"{sum(len(s['cells']) for s in sectors_out)} stocks"
+        ))
+
+    def _kite(self) -> dict:
+        import importlib.util
+
+        s = self.settings
+        has_yf = importlib.util.find_spec("yfinance") is not None
+        has_kc = importlib.util.find_spec("kiteconnect") is not None
+        resolved = (
+            self.history._resolve_provider() if s.is_live else "demo"
+        )
+        pairs = [
+            ("MODE", s.mode),
+            ("KITE_API_KEY", "set" if s.kite_api_key else "MISSING"),
+            ("KITE_API_SECRET", "set" if s.kite_api_secret else "MISSING"),
+            ("KITE_ACCESS_TOKEN", "set" if s.kite_access_token else "MISSING"),
+            ("HISTORY_PROVIDER", s.history_provider),
+            ("resolved history", resolved),
+            ("yfinance installed", "yes" if has_yf else "no"),
+            ("kiteconnect installed", "yes" if has_kc else "no"),
+        ]
+        blocks: list[dict] = [_keyval(pairs)]
+        if not s.is_live:
+            blocks.append(_note(
+                "Running in DEMO mode. Set DALAL_MODE=live to engage "
+                "Kite / yfinance providers."))
+        elif not s.has_kite_creds:
+            blocks.append(_note(
+                "Live mode without Kite credentials. HistoryService is on "
+                "the yfinance fallback (free Yahoo). Set KITE_API_KEY + "
+                "KITE_API_SECRET + a fresh KITE_ACCESS_TOKEN to enable "
+                "live quotes + Kite historical."))
+        elif not s.kite_access_token:
+            blocks.append(_note(
+                "API key + secret set but ACCESS_TOKEN is missing. "
+                "Visit  GET /kite/login  to start the daily login flow."))
+        else:
+            try:
+                from core.kite_client import KiteClient
+
+                client = KiteClient.from_settings(s)
+                profile = client._kite.profile()
+                blocks.append(_keyval([
+                    ("user_name", profile.get("user_name", "?")),
+                    ("broker", profile.get("broker", "?")),
+                    ("email", profile.get("email", "?")),
+                    ("user_type", profile.get("user_type", "?")),
+                ]))
+            except Exception as exc:
+                blocks.append(_note(f"Kite profile probe failed: {exc}"))
+                blocks.append(_text(
+                    "If this is a TokenException the daily access token is "
+                    "stale - regenerate via /kite/login."))
+        blocks.append(_text(
+            "Auth flow:  GET /kite/login  ->  /kite/callback?request_token=..."))
+        return _ok("KITE - CONNECTION DIAGNOSTIC", blocks)
 
     # --- backtest / calibration -------------------------------------------
     def _bt(self, args: list[str]) -> dict:
@@ -582,14 +740,16 @@ class CommandRouter:
                 ["<TICKER> FA", "fundamental snapshot (sector-relative)"],
                 ["<TICKER> N", "latest news + sentiment score"],
                 ["TOP [n] [SECTOR=x] [BUDGET=n]", "ranked buy-probability board"],
+                ["HEAT", "sector composite heat-map"],
                 ["SCAN [key]", "list / run prebuilt screeners"],
-                ["WATCH [a,b,c]", "live watchlist tape"],
+                ["WATCH [a,b,c] | SAVE/LOAD/LIST", "live watchlist tape + persistence"],
                 ["BT [FIT]", "calibration report / fit a calibrator"],
+                ["KITE", "data-provider + Kite connection diagnostic"],
                 ["RULES", "risk & discipline checklist"],
                 ["HELP", "this reference"],
             ]),
-            _text("examples:  RELIANCE TA   |   TOP 10 SECTOR=IT   |   "
-                  "TOP BUDGET=100000   |   SCAN momentum   |   BT FIT"),
+            _text("examples:  RELIANCE TA   |   TOP 10 SECTOR=IT BUDGET=100000   |   "
+                  "SCAN momentum   |   HEAT   |   BT FIT   |   WATCH SAVE morning"),
             _note("Analytics & research only - this terminal never places orders."),
         ])
 

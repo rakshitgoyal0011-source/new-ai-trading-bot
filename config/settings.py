@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     port: int = Field(8000, alias="DALAL_PORT")
 
     # --- data providers ---
+    history_provider: str = Field("auto", alias="HISTORY_PROVIDER")
     fundamentals_provider: str = Field("yfinance", alias="FUNDAMENTALS_PROVIDER")
     twelvedata_api_key: str = Field("", alias="TWELVEDATA_API_KEY")
     fmp_api_key: str = Field("", alias="FMP_API_KEY")
