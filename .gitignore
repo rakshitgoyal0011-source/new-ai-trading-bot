@@ -24,6 +24,9 @@ data_cache/*
 logs/
 *.log
 
+# Backtest artefacts (calibrators are user-generated, not source)
+runs/
+
 # OS / editors
 .DS_Store
 .idea/

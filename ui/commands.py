@@ -103,6 +103,8 @@ class CommandRouter:
                 return self._scan(parts[1:])
             if head == "WATCH":
                 return self._watch(parts[1:])
+            if head == "BT":
+                return self._bt(parts[1:])
             if len(parts) >= 2:
                 return self._ticker(parts[0].upper(), parts[1].upper(), parts[2:])
             return _err(f"unrecognised command: {raw!r}")
@@ -125,20 +127,49 @@ class CommandRouter:
                 return self._news(symbol, name)
         return _err(f"unknown action {verb!r} - try TA / GP / FA / N")
 
+    def _score_symbol(self, symbol: str, technical_score: float):
+        """Compute the live composite (tech + fund + sent) for one symbol.
+
+        Used by ticker commands that want the calibrated probability
+        alongside their main view. The leaderboard has its own batched
+        path that pre-fetches fundamentals once.
+        """
+        fund_data = self.fund_provider.fetch(symbol)
+        fund_score: float | None = None
+        if fund_data.available:
+            peers = [self.fund_provider.fetch(p.symbol)
+                     for p in universe.peers(symbol)]
+            fund_res = self.fund_engine.analyze(symbol, fund_data, peers)
+            if fund_res.available:
+                fund_score = fund_res.score
+        items = self.news_provider.fetch(symbol, limit=5)
+        sent_score = (
+            self.sent_engine.analyze(symbol, items).score if items else None
+        )
+        return self.composite.combine(
+            symbol, technical_score, fund_score, sent_score
+        )
+
     def _technical(self, symbol: str, name: str) -> dict:
         df = self.history.candles(symbol, "day", 260)
         higher = df.iloc[::5]  # crude weekly view for MTF confirmation
         res = self.tech.analyze(symbol, df, higher_tf=higher)
+        comp = self._score_symbol(symbol, res.score)
 
-        blocks: list[dict] = [
-            _keyval([
-                ("TECHNICAL SCORE", f"{res.score} / 100"),
-                ("BIAS", res.bias.upper()),
-                ("TREND", res.trend),
-                ("CONFIDENCE", f"{res.confidence:.0%}"),
-                ("MTF CONFIRMED", "yes" if res.mtf_confirmed else "no"),
-            ]),
+        header_pairs = [
+            ("TECHNICAL SCORE", f"{res.score} / 100"),
+            ("COMPOSITE", f"{comp.composite_score} / 100"),
+            ("BIAS", res.bias.upper()),
+            ("TREND", res.trend),
+            ("CONFIDENCE", f"{res.confidence:.0%}"),
+            ("MTF CONFIRMED", "yes" if res.mtf_confirmed else "no"),
         ]
+        if comp.calibrated_probability is not None:
+            header_pairs.insert(2, (
+                f"P(+) over {comp.horizon_days}d",
+                f"{comp.calibrated_probability * 100:.0f}%",
+            ))
+        blocks: list[dict] = [_keyval(header_pairs)]
         if res.sub_scores:
             blocks.append(_bars(list(res.sub_scores.items())))
         if res.reasons:
@@ -344,6 +375,7 @@ class CommandRouter:
                         "sentiment_score": (
                             sent_res.score if news_items else 50.0),
                     },
+                    calibrated_probability=comp.calibrated_probability,
                 ))
             except Exception as exc:
                 log.warning("leaderboard skip %s: %s", stock.symbol, exc)
@@ -369,20 +401,41 @@ class CommandRouter:
         if not rows:
             return _err(f"no stocks matched (sector={sector})")
 
-        table = _table(
-            ["#", "SYM", "SECTOR", "COMPOSITE", "BIAS", "TREND", "LTP", "CHG%"],
-            [[i + 1, e.symbol, e.sector, e.composite_score, e.bias,
-              e.trend, round(e.ltp, 2), round(e.change_pct, 2)]
-             for i, e in enumerate(rows)],
+        show_prob = any(e.calibrated_probability is not None for e in rows)
+        if show_prob:
+            headers = ["#", "SYM", "SECTOR", "COMPOSITE", "P(+)",
+                       "BIAS", "TREND", "LTP", "CHG%"]
+            body = [
+                [i + 1, e.symbol, e.sector, e.composite_score,
+                 (f"{e.calibrated_probability * 100:.0f}%"
+                  if e.calibrated_probability is not None else "-"),
+                 e.bias, e.trend, round(e.ltp, 2), round(e.change_pct, 2)]
+                for i, e in enumerate(rows)
+            ]
+        else:
+            headers = ["#", "SYM", "SECTOR", "COMPOSITE",
+                       "BIAS", "TREND", "LTP", "CHG%"]
+            body = [
+                [i + 1, e.symbol, e.sector, e.composite_score, e.bias,
+                 e.trend, round(e.ltp, 2), round(e.change_pct, 2)]
+                for i, e in enumerate(rows)
+            ]
+        table = _table(headers, body)
+
+        cal_note = (
+            "Composite = technical + fundamental + sentiment | "
+            f"providers: tech=engine, fund={self.fund_provider.name}, "
+            f"news={self.news_provider.name}"
         )
-        blocks = [
-            _note(
-                "Composite = technical + fundamental + sentiment | "
-                f"providers: tech=engine, fund={self.fund_provider.name}, "
-                f"news={self.news_provider.name}"
-            ),
-            table,
-        ]
+        if self.composite.calibrator is not None:
+            cal = self.composite.calibrator
+            cal_note += (
+                f" | calibrator: horizon={cal.horizon_bars}d, "
+                f"lift={'yes' if cal.has_lift else 'no'}"
+            )
+        else:
+            cal_note += " | calibrator: not fit yet - run BT FIT"
+        blocks = [_note(cal_note), table]
         if budget:
             blocks.append(_text(f"--- budget plan for Rs.{budget:,.0f} "
                                 f"({self.settings.risk_per_trade_pct}% risk/trade) ---"))
@@ -443,22 +496,100 @@ class CommandRouter:
             _text("set your own:  WATCH RELIANCE,TCS,INFY"),
         ], subtitle=f"{len(rows)} symbols")
 
+    # --- backtest / calibration -------------------------------------------
+    def _bt(self, args: list[str]) -> dict:
+        if args and args[0].upper() == "FIT":
+            return self._bt_fit(args[1:])
+        return self._bt_status()
+
+    def _bt_status(self) -> dict:
+        from backtest.calibration import DEFAULT_CALIBRATOR_PATH, Calibrator
+
+        if not DEFAULT_CALIBRATOR_PATH.exists():
+            return _ok("CALIBRATION STATUS", [
+                _note("No calibrator on disk yet."),
+                _text("Fit one with:  BT FIT   (or `python -m backtest.run`)"),
+                _text("Until then `calibrated_probability` stays None - by design."),
+            ])
+        try:
+            cal = Calibrator.load(DEFAULT_CALIBRATOR_PATH)
+        except Exception as exc:
+            return _err(f"could not load calibrator: {exc}")
+
+        header = _keyval([
+            ("HORIZON (bars)", cal.horizon_bars),
+            ("TRAIN N", cal.n_train),
+            ("TEST N", cal.n_test),
+            ("BASE RATE", round(cal.base_rate, 3)),
+            ("BRIER train", round(cal.brier_train, 4)),
+            ("BRIER test", round(cal.brier_test, 4)),
+            ("BRIER baseline", round(cal.brier_baseline, 4)),
+            ("ECE test", round(cal.ece_test, 4)),
+            ("AUC test", round(cal.auc_test, 3)),
+            ("LIFT?", "YES - probability exposed" if cal.has_lift
+                       else "no - probability suppressed"),
+            ("FITTED AT", cal.fitted_at),
+        ])
+        rows = []
+        for b in cal.reliability:
+            if b["count"] == 0:
+                rows.append([f"{b['bin_lo']:.1f}-{b['bin_hi']:.1f}",
+                             "-", 0, ""])
+                continue
+            bar = "#" * max(0, int(round(b["observed"] * 30)))
+            rows.append([
+                f"{b['bin_lo']:.1f}-{b['bin_hi']:.1f}",
+                f"{b['observed']:.3f}",
+                b["count"], bar,
+            ])
+        return _ok("CALIBRATION REPORT", [
+            header,
+            _text(cal.lift_note),
+            _text("reliability (predicted bin -> observed positive rate):"),
+            _table(["PRED BIN", "OBSERVED", "N", "BAR"], rows),
+            _disclaimer(),
+        ])
+
+    def _bt_fit(self, args: list[str]) -> dict:
+        horizon = 10
+        for a in args:
+            if a.upper().startswith("HORIZON="):
+                try:
+                    horizon = int(a.split("=", 1)[1])
+                except ValueError:
+                    pass
+        from backtest.harness import run_backtest
+
+        try:
+            report = run_backtest(self.settings, horizon_bars=horizon)
+        except Exception as exc:
+            log.exception("backtest failed")
+            return _err(f"backtest failed: {exc}")
+        # reload the calibrator in the running composite engine so the
+        # next TOP / TA reflects it immediately.
+        self.composite.calibrator = report.calibrator
+        self._lb_cache = None
+        log.info("fit complete - %d points, lift=%s",
+                 report.n_points, report.calibrator.has_lift)
+        return self._bt_status()
+
     # --- static ------------------------------------------------------------
     def _help(self) -> dict:
         return _ok("DALAL TERMINAL - COMMAND REFERENCE", [
             _table(["COMMAND", "DESCRIPTION"], [
                 ["<TICKER> TA", "technical signal breakdown + 0-100 score"],
                 ["<TICKER> GP", "price chart (sparkline) + key indicators"],
-                ["<TICKER> FA", "fundamental snapshot (Milestone 4)"],
-                ["<TICKER> N", "latest news + sentiment (Milestone 5)"],
+                ["<TICKER> FA", "fundamental snapshot (sector-relative)"],
+                ["<TICKER> N", "latest news + sentiment score"],
                 ["TOP [n] [SECTOR=x] [BUDGET=n]", "ranked buy-probability board"],
                 ["SCAN [key]", "list / run prebuilt screeners"],
                 ["WATCH [a,b,c]", "live watchlist tape"],
+                ["BT [FIT]", "calibration report / fit a calibrator"],
                 ["RULES", "risk & discipline checklist"],
                 ["HELP", "this reference"],
             ]),
             _text("examples:  RELIANCE TA   |   TOP 10 SECTOR=IT   |   "
-                  "TOP BUDGET=100000   |   SCAN momentum"),
+                  "TOP BUDGET=100000   |   SCAN momentum   |   BT FIT"),
             _note("Analytics & research only - this terminal never places orders."),
         ])
 

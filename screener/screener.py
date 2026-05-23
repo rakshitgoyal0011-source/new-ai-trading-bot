@@ -27,6 +27,7 @@ class LeaderboardEntry:
     atr: float = 0.0
     top_reason: str = ""
     metrics: dict[str, float] = field(default_factory=dict)
+    calibrated_probability: float | None = None
 
 
 def rank(
@@ -75,14 +76,21 @@ SCANS: list[Scan] = [
          "composite score 70+ with a bullish bias", True,
          lambda e: e.composite_score >= 70),
     Scan("breakout_news", "Breakout + positive news",
-         "breakout confirmed by positive sentiment - needs Milestone 5",
-         False),
+         "technical strength confirmed by positive sentiment", True,
+         lambda e: (
+             e.technical_score >= 65
+             and e.metrics.get("sentiment_score", 50) >= 60
+         )),
     Scan("value", "Value",
-         "cheap vs sector on PE/PB with healthy returns - needs Milestone 4",
-         False),
+         "cheap vs sector on PE/PB with healthy returns (fundamental >= 65)",
+         True,
+         lambda e: e.metrics.get("fundamental_score", 50) >= 65),
     Scan("oversold_quality", "Oversold + strong fundamentals",
-         "technically oversold with solid fundamentals - needs Milestone 4",
-         False),
+         "RSI < 40 with a solid sector-relative fundamental score", True,
+         lambda e: (
+             e.metrics.get("rsi", 50) < 40
+             and e.metrics.get("fundamental_score", 50) >= 60
+         )),
 ]
 
 _SCAN_BY_KEY = {s.key: s for s in SCANS}

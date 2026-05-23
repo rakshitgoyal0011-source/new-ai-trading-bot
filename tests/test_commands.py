@@ -66,3 +66,18 @@ def test_news_command_end_to_end():
 
 def test_empty_command_is_handled():
     assert _router().dispatch("")["ok"] is False
+
+
+def test_bt_status_with_no_calibrator(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    resp = _router().dispatch("BT")
+    assert resp["ok"] is True
+    assert "CALIBRATION" in resp["title"]
+    # the no-calibrator path always emits a note
+    assert any(b["type"] == "note" for b in resp["blocks"])
+
+
+def test_help_mentions_bt():
+    resp = _router().dispatch("HELP")
+    table = next(b for b in resp["blocks"] if b["type"] == "table")
+    assert any("BT" in row[0] for row in table["rows"])
