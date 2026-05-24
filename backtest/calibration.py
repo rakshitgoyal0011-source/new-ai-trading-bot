@@ -243,4 +243,7 @@ def fit_calibrator(
     )
 
 
-DEFAULT_CALIBRATOR_PATH = Path("runs/calibrator.json")
+# Anchored at the project root so the running server, pytest, and CLI
+# invocations all read/write the same calibrator regardless of cwd.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CALIBRATOR_PATH = _PROJECT_ROOT / "runs" / "calibrator.json"

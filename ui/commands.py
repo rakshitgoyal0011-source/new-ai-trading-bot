@@ -8,6 +8,12 @@ is the only place that knows about command syntax.
 from __future__ import annotations
 
 import time
+from pathlib import Path
+
+# Anchor on-disk paths to the project root, not the CWD - so the running
+# server, the pytest invocation, and a user invoking `python -m
+# backtest.run` from anywhere all read/write the same runs/ folder.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from analysis.composite.engine import DISCLAIMER, CompositeEngine
 from analysis.fundamental.engine import FundamentalEngine
@@ -208,15 +214,22 @@ class CommandRouter:
             ("Vol vs avg", ind.get("volume_ratio", 0)),
         ]))
 
-        plan = build_trade_plan(
-            symbol, ind.get("close", 0.0), ind.get("atr", 0.0),
-            self.settings.default_capital,
-            risk_pct=self.settings.risk_per_trade_pct,
-        )
-        blocks.append(_note(
-            f"RISK FRAME (capital Rs.{self.settings.default_capital:,.0f}, "
-            f"{plan.risk_pct}% risk): entry {plan.entry}  stop {plan.stop}  "
-            f"targets {plan.targets}  R:R {plan.reward_risk}  size {plan.shares} sh"))
+        close = ind.get("close")
+        atr = ind.get("atr")
+        if not close or not atr or close <= 0 or atr <= 0:
+            blocks.append(_note(
+                "Trade plan unavailable - indicator pipeline did not "
+                "produce a usable close + ATR for this window."))
+        else:
+            plan = build_trade_plan(
+                symbol, close, atr, self.settings.default_capital,
+                risk_pct=self.settings.risk_per_trade_pct,
+            )
+            blocks.append(_note(
+                f"RISK FRAME (capital Rs.{self.settings.default_capital:,.0f}, "
+                f"{plan.risk_pct}% risk): entry {plan.entry}  stop {plan.stop}  "
+                f"targets {plan.targets}  R:R {plan.reward_risk}  "
+                f"size {plan.shares} sh"))
         blocks.append(_disclaimer())
         return _ok(f"{symbol} - TECHNICAL ANALYSIS", blocks, subtitle=name)
 
@@ -470,7 +483,7 @@ class CommandRouter:
         else:
             cal_note += " | calibrator: not fit yet - run BT FIT"
         blocks = [_note(cal_note), table]
-        if budget:
+        if budget is not None and budget > 0:
             from backtest.backtest import CostModel
 
             cost_model = CostModel()
@@ -551,9 +564,8 @@ class CommandRouter:
 
     def _watch_persist(self, args: list[str]) -> dict:
         import json
-        from pathlib import Path
 
-        base = Path("runs/watchlists")
+        base = PROJECT_ROOT / "runs" / "watchlists"
         op = args[0].upper()
         if op == "LIST":
             base.mkdir(parents=True, exist_ok=True)

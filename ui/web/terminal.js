@@ -61,7 +61,7 @@
         const item = document.createElement("span");
         item.className = "tape-item";
         item.innerHTML =
-          '<span class="sym">' + row.s + '</span> ' +
+          '<span class="sym">' + esc(row.s) + '</span> ' +
           '<span class="px"></span> <span class="ch"></span>';
         track.appendChild(item);
         (tapeEls[row.s] = tapeEls[row.s] || []).push(item);
@@ -90,7 +90,7 @@
   function sideRow(r) {
     const cls = r.d > 0 ? "up" : r.d < 0 ? "down" : "flat";
     const sign = r.chg >= 0 ? "+" : "";
-    return '<div class="side-row"><span class="sym">' + r.s + "</span>" +
+    return '<div class="side-row"><span class="sym">' + esc(r.s) + "</span>" +
       '<span class="' + cls + '">' + r.ltp.toFixed(2) + " " +
       sign + r.chg.toFixed(2) + "%</span></div>";
   }
@@ -105,8 +105,12 @@
   /* ---- renderers ---- */
   function sparkline(data) {
     if (!data || !data.length) return "";
-    const min = Math.min.apply(null, data);
-    const max = Math.max.apply(null, data);
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
     const span = max - min || 1;
     return data
       .map((v) => SPARK[Math.min(7, Math.floor(((v - min) / span) * 8))])
@@ -173,10 +177,13 @@
     const W = 720, H = 220, padT = 6, padB = 12, padL = 36, padR = 6;
     const innerW = W - padL - padR;
     const innerH = H - padT - padB;
-    const highs = data.map((d) => d[1]);
-    const lows = data.map((d) => d[2]);
-    const max = Math.max.apply(null, highs);
-    const min = Math.min.apply(null, lows);
+    // Manual reduction to keep `apply(null, hugeArray)` from blowing the
+    // JS engine stack on long series.
+    let max = -Infinity, min = Infinity;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][1] > max) max = data[i][1];
+      if (data[i][2] < min) min = data[i][2];
+    }
     const span = (max - min) || 1;
     const slot = innerW / data.length;
     const bodyW = Math.max(2, slot * 0.65);

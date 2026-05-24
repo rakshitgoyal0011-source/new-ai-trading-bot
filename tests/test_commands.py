@@ -69,11 +69,14 @@ def test_empty_command_is_handled():
 
 
 def test_bt_status_with_no_calibrator(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    # paths are now anchored to PROJECT_ROOT, not cwd - point the
+    # constant at an absent file instead
+    from backtest import calibration as cal_mod
+    monkeypatch.setattr(
+        cal_mod, "DEFAULT_CALIBRATOR_PATH", tmp_path / "absent.json")
     resp = _router().dispatch("BT")
     assert resp["ok"] is True
     assert "CALIBRATION" in resp["title"]
-    # the no-calibrator path always emits a note
     assert any(b["type"] == "note" for b in resp["blocks"])
 
 
@@ -110,7 +113,10 @@ def test_kite_command_shows_diagnostic_keyval():
 
 
 def test_watch_save_load_roundtrip(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    # _watch_persist now anchors at PROJECT_ROOT - point the constant
+    # at a temp dir so the test never pollutes the real runs/ folder
+    from ui import commands as cmd_mod
+    monkeypatch.setattr(cmd_mod, "PROJECT_ROOT", tmp_path)
     r = _router()
     r.watchlist = ["RELIANCE", "TCS"]
     assert r.dispatch("WATCH SAVE morning")["ok"] is True
@@ -121,6 +127,54 @@ def test_watch_save_load_roundtrip(monkeypatch, tmp_path):
     assert listed["ok"] is True
     table = next(b for b in listed["blocks"] if b["type"] == "table")
     assert any("morning" in row[0] for row in table["rows"])
+
+
+def test_default_calibrator_path_is_absolute_not_cwd_relative():
+    """Regression: `Path('runs/calibrator.json')` was CWD-relative, so
+    launching the server from a different directory silently ran without
+    a calibrator. Now anchored at the project root."""
+    from backtest.calibration import DEFAULT_CALIBRATOR_PATH
+    assert DEFAULT_CALIBRATOR_PATH.is_absolute()
+    # also lives somewhere named 'runs' (sanity check)
+    assert "runs" in DEFAULT_CALIBRATOR_PATH.parts
+
+
+def test_trade_plan_unavailable_when_indicator_is_missing(monkeypatch):
+    """Regression: build_trade_plan used to be called with
+    ind.get('close', 0.0)/ind.get('atr', 0.0) defaults, producing a
+    Rs.0 plan or div-by-zero crash on a degenerate technical pipeline."""
+    router = _router()
+
+    class _DegenerateTech:
+        def analyze(self, symbol, df, higher_tf=None):
+            class _R: pass
+            r = _R()
+            r.score = 50.0
+            r.bias = "neutral"
+            r.trend = "sideways"
+            r.confidence = 0.0
+            r.mtf_confirmed = False
+            r.sub_scores = {}
+            r.reasons = []
+            r.patterns = []
+            r.indicators = {}   # no close, no atr - degenerate
+            return r
+
+    router.tech = _DegenerateTech()
+    resp = router.dispatch("RELIANCE TA")
+    assert resp["ok"] is True
+    notes = [b["text"] for b in resp["blocks"] if b["type"] == "note"]
+    assert any("Trade plan unavailable" in t for t in notes)
+
+
+def test_top_budget_zero_skips_plan_without_crashing():
+    """Regression: `if budget:` treated BUDGET=0 the same as BUDGET=anything-positive
+    causing inconsistent behaviour; explicit `is not None and > 0` now."""
+    resp = _router().dispatch("TOP 5 BUDGET=0")
+    assert resp["ok"] is True
+    tables = [b for b in resp["blocks"] if b["type"] == "table"]
+    # no plan table - only the leaderboard one
+    assert not any("OUTLAY" in t["headers"] for t in tables)
 
 
 def test_news_tone_marker_for_negative_sentiment_is_minus():
