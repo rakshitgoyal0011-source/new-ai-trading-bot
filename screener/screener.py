@@ -27,6 +27,7 @@ class LeaderboardEntry:
     atr: float = 0.0
     top_reason: str = ""
     metrics: dict[str, float] = field(default_factory=dict)
+    calibrated_probability: float | None = None
 
 
 def rank(
@@ -75,14 +76,40 @@ SCANS: list[Scan] = [
          "composite score 70+ with a bullish bias", True,
          lambda e: e.composite_score >= 70),
     Scan("breakout_news", "Breakout + positive news",
-         "breakout confirmed by positive sentiment - needs Milestone 5",
-         False),
+         "technical strength confirmed by positive sentiment", True,
+         lambda e: (
+             e.technical_score >= 65
+             and e.metrics.get("sentiment_score", 50) >= 60
+         )),
     Scan("value", "Value",
-         "cheap vs sector on PE/PB with healthy returns - needs Milestone 4",
-         False),
+         "cheap vs sector on PE/PB with healthy returns (fundamental >= 65)",
+         True,
+         lambda e: e.metrics.get("fundamental_score", 50) >= 65),
     Scan("oversold_quality", "Oversold + strong fundamentals",
-         "technically oversold with solid fundamentals - needs Milestone 4",
-         False),
+         "RSI < 40 with a solid sector-relative fundamental score", True,
+         lambda e: (
+             e.metrics.get("rsi", 50) < 40
+             and e.metrics.get("fundamental_score", 50) >= 60
+         )),
+    Scan("gap_up", "Gap up",
+         "open >= 2% above prior close with technical strength", True,
+         lambda e: (
+             e.metrics.get("gap_pct", 0.0) >= 2.0
+             and e.technical_score >= 50
+         )),
+    Scan("near_52w_high", "Near 52-week high",
+         "trading within 5% of the 52-week high with a bullish bias", True,
+         lambda e: (
+             e.metrics.get("from_52w_high_pct", 0.0) >= 95.0
+             and e.bias == "bullish"
+         )),
+    Scan("low_vol_uptrend", "Low-volatility uptrend",
+         "confirmed uptrend with ATR/price <= 2% (calm compounders)", True,
+         lambda e: (
+             e.trend == "uptrend"
+             and e.metrics.get("atr_pct", 99.0) <= 2.0
+             and e.technical_score >= 55
+         )),
 ]
 
 _SCAN_BY_KEY = {s.key: s for s in SCANS}

@@ -61,7 +61,7 @@
         const item = document.createElement("span");
         item.className = "tape-item";
         item.innerHTML =
-          '<span class="sym">' + row.s + '</span> ' +
+          '<span class="sym">' + esc(row.s) + '</span> ' +
           '<span class="px"></span> <span class="ch"></span>';
         track.appendChild(item);
         (tapeEls[row.s] = tapeEls[row.s] || []).push(item);
@@ -90,7 +90,7 @@
   function sideRow(r) {
     const cls = r.d > 0 ? "up" : r.d < 0 ? "down" : "flat";
     const sign = r.chg >= 0 ? "+" : "";
-    return '<div class="side-row"><span class="sym">' + r.s + "</span>" +
+    return '<div class="side-row"><span class="sym">' + esc(r.s) + "</span>" +
       '<span class="' + cls + '">' + r.ltp.toFixed(2) + " " +
       sign + r.chg.toFixed(2) + "%</span></div>";
   }
@@ -105,8 +105,12 @@
   /* ---- renderers ---- */
   function sparkline(data) {
     if (!data || !data.length) return "";
-    const min = Math.min.apply(null, data);
-    const max = Math.max.apply(null, data);
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
     const span = max - min || 1;
     return data
       .map((v) => SPARK[Math.min(7, Math.floor(((v - min) / span) * 8))])
@@ -120,6 +124,112 @@
     if (/^\+\d/.test(t)) return "up";
     if (/^-\d/.test(t)) return "down";
     return "";
+  }
+
+  function heatColor(score) {
+    // 0 -> red, 50 -> amber, 100 -> green; smooth ramp
+    const s = Math.max(0, Math.min(100, score));
+    const r = s < 50 ? 255 : Math.round(255 - (s - 50) * 5.1);
+    const g = s < 50 ? Math.round(s * 5.1) : 200;
+    return "rgb(" + r + "," + g + ",40)";
+  }
+
+  function renderHeatmap(b) {
+    const wrap = document.createElement("div");
+    wrap.className = "heat-wrap";
+    (b.sectors || []).forEach((sec) => {
+      const row = document.createElement("div");
+      row.className = "heat-row";
+      const label = document.createElement("div");
+      label.className = "heat-label";
+      label.textContent = sec.name + "  avg " + sec.avg;
+      row.appendChild(label);
+      const cells = document.createElement("div");
+      cells.className = "heat-cells";
+      (sec.cells || []).forEach((c) => {
+        const cell = document.createElement("div");
+        cell.className = "heat-cell";
+        cell.style.background = heatColor(c.score);
+        cell.innerHTML =
+          '<div class="heat-sym">' + esc(c.symbol) + "</div>" +
+          '<div class="heat-score">' + c.score + "</div>";
+        cell.title = c.symbol + " | composite " + c.score +
+          " | chg " + c.change_pct + "%";
+        cells.appendChild(cell);
+      });
+      row.appendChild(cells);
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
+  function renderCandles(b) {
+    const wrap = document.createElement("div");
+    wrap.className = "candle-wrap";
+    if (b.label) {
+      const lab = document.createElement("div");
+      lab.className = "spark-label";
+      lab.textContent = b.label;
+      wrap.appendChild(lab);
+    }
+    const data = b.ohlc || [];
+    if (!data.length) return wrap;
+    const W = 720, H = 220, padT = 6, padB = 12, padL = 36, padR = 6;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+    // Manual reduction to keep `apply(null, hugeArray)` from blowing the
+    // JS engine stack on long series.
+    let max = -Infinity, min = Infinity;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][1] > max) max = data[i][1];
+      if (data[i][2] < min) min = data[i][2];
+    }
+    const span = (max - min) || 1;
+    const slot = innerW / data.length;
+    const bodyW = Math.max(2, slot * 0.65);
+    const y = (p) => padT + ((max - p) / span) * innerH;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.classList.add("candle-svg");
+    for (let i = 0; i < 4; i++) {
+      const yy = padT + (i / 3) * innerH;
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", padL); line.setAttribute("x2", W - padR);
+      line.setAttribute("y1", yy); line.setAttribute("y2", yy);
+      line.setAttribute("stroke", "#10171f");
+      line.setAttribute("stroke-width", 0.5);
+      svg.appendChild(line);
+      const label = document.createElementNS(svgNS, "text");
+      label.setAttribute("x", 2); label.setAttribute("y", yy + 3);
+      label.setAttribute("fill", "#5f7180");
+      label.setAttribute("font-size", 9);
+      label.textContent = (max - (i / 3) * span).toFixed(2);
+      svg.appendChild(label);
+    }
+    data.forEach((d, i) => {
+      const o = d[0], h = d[1], l = d[2], c = d[3];
+      const cx = padL + i * slot + slot / 2;
+      const up = c >= o;
+      const color = up ? "#2ecc71" : "#ff5247";
+      const wick = document.createElementNS(svgNS, "line");
+      wick.setAttribute("x1", cx); wick.setAttribute("x2", cx);
+      wick.setAttribute("y1", y(h)); wick.setAttribute("y2", y(l));
+      wick.setAttribute("stroke", color);
+      wick.setAttribute("stroke-width", 1);
+      svg.appendChild(wick);
+      const body = document.createElementNS(svgNS, "rect");
+      const top = Math.min(y(o), y(c));
+      body.setAttribute("x", cx - bodyW / 2);
+      body.setAttribute("y", top);
+      body.setAttribute("width", bodyW);
+      body.setAttribute("height", Math.max(1, Math.abs(y(o) - y(c))));
+      body.setAttribute("fill", color);
+      svg.appendChild(body);
+    });
+    wrap.appendChild(svg);
+    return wrap;
   }
 
   function renderBlock(b) {
@@ -165,6 +275,10 @@
     } else if (b.type === "spark") {
       el.innerHTML = (b.label ? '<div class="spark-label">' + esc(b.label) +
         "</div>" : "") + '<div class="spark">' + sparkline(b.data) + "</div>";
+    } else if (b.type === "candles") {
+      el.appendChild(renderCandles(b));
+    } else if (b.type === "heatmap") {
+      el.appendChild(renderHeatmap(b));
     } else {
       el.className += " blk-text";
       el.textContent = JSON.stringify(b);
