@@ -52,3 +52,19 @@ def test_calendar_event_to_dict_serialises_date():
     assert d["date"].startswith("2026-06-01")
     assert d["event_type"] == "ex_dividend"
     assert "days_away" in d
+
+
+def test_demo_calendar_handles_small_horizon_without_hanging():
+    """Regression: original `while days in used_days: days = (days+1) %
+    (horizon+1) or 1` looped forever once horizon_days filled up."""
+    events1 = DemoCalendar().fetch("RELIANCE", horizon_days=1)
+    assert len(events1) <= 1
+    events2 = DemoCalendar().fetch("TCS", horizon_days=2)
+    assert len(events2) <= 2
+    # also stress with horizon equal to max possible n
+    events3 = DemoCalendar().fetch("INFY", horizon_days=3)
+    assert len(events3) <= 3
+
+
+def test_demo_calendar_zero_horizon_returns_empty():
+    assert DemoCalendar().fetch("RELIANCE", horizon_days=0) == []

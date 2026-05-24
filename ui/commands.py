@@ -162,7 +162,10 @@ class CommandRouter:
 
     def _technical(self, symbol: str, name: str) -> dict:
         df = self.history.candles(symbol, "day", 260)
-        higher = df.iloc[::5]  # crude weekly view for MTF confirmation
+        # crude weekly view for MTF confirmation - anchor at the latest
+        # bar so the most recent week is never silently dropped
+        offset = (len(df) - 1) % 5 if len(df) else 0
+        higher = df.iloc[offset::5]
         res = self.tech.analyze(symbol, df, higher_tf=higher)
         comp = self._score_symbol(symbol, res.score)
 
@@ -325,8 +328,8 @@ class CommandRouter:
             rows = []
             for i in items[:12]:
                 date = i.published.strftime("%b %d") if i.published else "?"
-                tone = ("+" if i.sentiment or 0 > 0 else
-                        "-" if (i.sentiment or 0) < 0 else " ")
+                s = i.sentiment or 0
+                tone = "+" if s > 0 else "-" if s < 0 else " "
                 rows.append([date, i.source, f"{tone} {i.headline}"])
             blocks.append(_table(["DATE", "SOURCE", "HEADLINE"], rows))
         if res.material_events:
@@ -418,8 +421,15 @@ class CommandRouter:
                 budget = float(a.split("=", 1)[1])
             elif up.isdigit():
                 max_results = int(up)
-            elif universe.get(up) is None and up.title() in universe.sectors():
-                sector = up.title()
+            elif universe.get(up) is None:
+                # case-insensitive sector match so `TOP IT` and `TOP FMCG`
+                # don't get crushed by str.title() lowercasing acronyms.
+                match = next(
+                    (s for s in universe.sectors() if s.lower() == up.lower()),
+                    None,
+                )
+                if match:
+                    sector = match
         rows = screener.rank(self._leaderboard(), sector=sector,
                              max_results=max_results)
         if not rows:

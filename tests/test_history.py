@@ -12,6 +12,7 @@ from data.history import HistoryService
 
 def test_resolve_provider_auto_without_kite_uses_yfinance(tmp_path):
     s = Settings(DALAL_MODE="live", HISTORY_PROVIDER="auto",
+                 KITE_API_KEY="", KITE_API_SECRET="",
                  DB_PATH=str(tmp_path / "x.db"))
     hs = HistoryService(s)
     assert hs._resolve_provider() == "yfinance"
@@ -51,6 +52,7 @@ def test_yfinance_fetch_with_mocked_module(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "yfinance", mock_yf)
 
     s = Settings(DALAL_MODE="live", HISTORY_PROVIDER="yfinance",
+                 KITE_API_KEY="", KITE_API_SECRET="",
                  DB_PATH=str(tmp_path / "x.db"))
     hs = HistoryService(s)
     out = hs.candles("RELIANCE", "day", 100)
@@ -69,6 +71,7 @@ def test_yfinance_returns_empty_when_no_data(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "yfinance", mock_yf)
 
     s = Settings(DALAL_MODE="live", HISTORY_PROVIDER="yfinance",
+                 KITE_API_KEY="", KITE_API_SECRET="",
                  DB_PATH=str(tmp_path / "x.db"))
     hs = HistoryService(s)
     out = hs.candles("UNKNOWN", "day", 100)

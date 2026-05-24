@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
+from data._seeding import deterministic_seed
 from monitoring.logging import get_logger
 
 log = get_logger("data.calendar")
@@ -66,24 +67,26 @@ class DemoCalendar(CalendarProvider):
     name = "demo"
 
     def fetch(self, symbol: str, horizon_days: int = 30) -> list[CalendarEvent]:
-        rng = np.random.default_rng(abs(hash("cal_" + symbol)) % (2**31))
-        n = int(rng.integers(1, 4))
+        if horizon_days <= 0:
+            return []
+        rng = np.random.default_rng(deterministic_seed("cal_", symbol))
+        # cap n at the horizon so sampling-without-replacement always
+        # terminates; the original `while days in used_days` could spin
+        # forever when horizon_days was small.
+        n = min(int(rng.integers(1, 4)), horizon_days)
         now = datetime.now()
+        days_picks = rng.choice(
+            np.arange(1, horizon_days + 1), size=n, replace=False)
         events: list[CalendarEvent] = []
-        used_days: set[int] = set()
-        for _ in range(n):
+        for days in days_picks:
             etype = EVENT_TYPES[rng.integers(0, len(EVENT_TYPES))]
-            days = int(rng.integers(1, horizon_days + 1))
-            while days in used_days:
-                days = (days + 1) % (horizon_days + 1) or 1
-            used_days.add(days)
             desc = _DEMO_DESCRIPTIONS[etype].format(
                 q=int(rng.integers(1, 5)),
                 d=round(float(rng.uniform(1, 25)), 1),
                 r=int(rng.integers(2, 6)),
             )
             events.append(CalendarEvent(
-                symbol=symbol, date=now + timedelta(days=days),
+                symbol=symbol, date=now + timedelta(days=int(days)),
                 event_type=etype, description=desc, source="demo",
             ))
         events.sort(key=lambda e: e.date)

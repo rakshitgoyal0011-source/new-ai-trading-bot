@@ -97,3 +97,31 @@ def test_walk_forward_persists_final_calibrator(tmp_path):
         train_size=500, test_size=200, step=300, save_path=out,
     )
     assert out.exists()
+
+
+def test_walk_forward_threshold_is_strict_60_percent():
+    """Regression: `max(1, int(round(folds * 0.6)))` was lax. With round(),
+    4 folds needed only 2/4 (50%). math.ceil() gives the correct 3/5 for
+    5 folds and 3/4 for 4."""
+    import math
+    from backtest.walkforward import _MIN_FOLDS_FOR_STABILITY, _STABLE_LIFT_FRACTION
+    assert _STABLE_LIFT_FRACTION == 0.6
+    assert _MIN_FOLDS_FOR_STABILITY >= 3
+    assert math.ceil(5 * _STABLE_LIFT_FRACTION) == 3
+    assert math.ceil(4 * _STABLE_LIFT_FRACTION) == 3
+    assert math.ceil(3 * _STABLE_LIFT_FRACTION) == 2
+
+
+def test_walk_forward_single_fold_cannot_declare_stable_lift(tmp_path):
+    """Regression: round(1 * 0.6) = 1 and max(1, ...) = 1, so a single
+    fold passing used to mark the calibrator stable. With the new
+    _MIN_FOLDS_FOR_STABILITY guard, that's impossible."""
+    pts = _make_points(800, seed=1, signal=0.95)
+    report = run_walk_forward(
+        settings=None, points=pts,
+        train_size=500, test_size=200, step=300,
+        save_path=tmp_path / "cal.json",
+    )
+    assert report.fold_count <= 2
+    assert report.stable_lift is False
+    assert report.final_calibrator.has_lift is False

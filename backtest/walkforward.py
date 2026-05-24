@@ -12,6 +12,7 @@ fortunate slice.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -27,9 +28,12 @@ from monitoring.logging import get_logger
 
 log = get_logger("backtest.walkforward")
 
-# 60% of folds must individually show lift before we consider the
-# overall calibrator stable enough to expose probabilities.
+# A strict 60% of folds must individually show lift before we consider
+# the overall calibrator stable enough to expose probabilities, AND we
+# require at least _MIN_FOLDS_FOR_STABILITY folds in the first place -
+# you cannot draw a stability conclusion from one or two windows.
 _STABLE_LIFT_FRACTION = 0.6
+_MIN_FOLDS_FOR_STABILITY = 3
 
 
 @dataclass
@@ -119,9 +123,16 @@ def run_walk_forward(
     final_test = points[-test_size:]
     final = _fit_window(final_train, final_test, horizon_bars)
 
-    # walk-forward stability gate
+    # walk-forward stability gate: ceil(60% * folds) AND at least
+    # _MIN_FOLDS_FOR_STABILITY folds. round() with banker's rounding
+    # plus a max(1, ...) floor previously let a single fold declare
+    # stability, defeating the gate.
     lift_folds = sum(1 for f in folds if f.has_lift)
-    stable_lift = lift_folds >= max(1, int(round(len(folds) * _STABLE_LIFT_FRACTION)))
+    threshold = math.ceil(len(folds) * _STABLE_LIFT_FRACTION)
+    stable_lift = (
+        len(folds) >= _MIN_FOLDS_FOR_STABILITY
+        and lift_folds >= threshold
+    )
 
     if final.has_lift and not stable_lift:
         # the final window passed on its own, but walk-forward is shaky

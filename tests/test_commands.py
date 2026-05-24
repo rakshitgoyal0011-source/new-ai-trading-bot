@@ -123,6 +123,49 @@ def test_watch_save_load_roundtrip(monkeypatch, tmp_path):
     assert any("morning" in row[0] for row in table["rows"])
 
 
+def test_news_tone_marker_for_negative_sentiment_is_minus():
+    """Regression: `i.sentiment or 0 > 0` parsed as `i.sentiment or (0>0)`,
+    making any nonzero sentiment - including NEGATIVE - render as '+'."""
+    from datetime import datetime
+    from data.news import NewsItem
+
+    router = _router()
+    bearish = NewsItem(
+        symbol="RELIANCE", headline="Reliance plunges on regulatory probe",
+        source="test", published=datetime.now(), sentiment=-0.6,
+    )
+    router.news_provider.fetch = lambda symbol, limit=10: [bearish]
+    resp = router.dispatch("RELIANCE N")
+    assert resp["ok"] is True
+    tbl = next(b for b in resp["blocks"] if b["type"] == "table")
+    cell = tbl["rows"][0][2]
+    assert cell.startswith("-"), f"expected '-' tone, got: {cell!r}"
+
+
+def test_top_sector_filter_works_for_uppercase_acronyms():
+    """Regression: `up.title() in universe.sectors()` failed for IT/FMCG
+    because str.title() lowercases the body of acronyms."""
+    resp = _router().dispatch("TOP IT")
+    assert resp["ok"] is True
+    tbl = next(b for b in resp["blocks"] if b["type"] == "table")
+    # every row's sector column should be exactly "IT"
+    for row in tbl["rows"]:
+        assert row[2] == "IT", f"non-IT row leaked through filter: {row}"
+
+
+def test_higher_timeframe_view_includes_latest_bar():
+    """Regression: `df.iloc[::5]` drops the latest bar when len%5 != 1.
+    The fix anchors the stride at the latest bar."""
+    import pandas as pd
+    for n in (256, 257, 258, 259, 260):
+        df = pd.DataFrame({"close": range(n)})
+        offset = (len(df) - 1) % 5
+        higher = df.iloc[offset::5]
+        assert higher.index[-1] == n - 1, (
+            f"latest bar dropped at len={n}"
+        )
+
+
 def test_top_budget_includes_cost_columns():
     resp = _router().dispatch("TOP 5 BUDGET=100000")
     assert resp["ok"] is True

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from config import universe
+from data._seeding import deterministic_seed
 from monitoring.logging import get_logger
 
 log = get_logger("data.news")
@@ -69,7 +70,7 @@ class DemoNews(NewsProvider):
     name = "demo"
 
     def fetch(self, symbol: str, limit: int = 5) -> list[NewsItem]:
-        rng = np.random.default_rng(abs(hash("news_" + symbol)) % (2**31))
+        rng = np.random.default_rng(deterministic_seed("news_", symbol))
         stock = universe.get(symbol)
         name = stock.name if stock else symbol
         now = datetime.now()
@@ -95,6 +96,45 @@ _RSS_FEEDS: list[tuple[str, str, bool]] = [
     ("Moneycontrol Markets", "https://www.moneycontrol.com/rss/business.xml", False),
     ("ET Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", False),
 ]
+
+
+_FIRST_WORD_COUNTS: dict[str, int] | None = None
+
+
+def _first_word_counts() -> dict[str, int]:
+    """Tally first-word occurrences across the universe so we can tell
+    'Reliance' (unique) from 'Tata' / 'Bajaj' (shared by many group
+    companies). Cached so we pay this once per process."""
+    global _FIRST_WORD_COUNTS
+    if _FIRST_WORD_COUNTS is None:
+        counts: dict[str, int] = {}
+        for s in universe.DEFAULT_UNIVERSE:
+            parts = s.name.split()
+            if parts:
+                fw = parts[0].lower()
+                counts[fw] = counts.get(fw, 0) + 1
+        _FIRST_WORD_COUNTS = counts
+    return _FIRST_WORD_COUNTS
+
+
+def build_needles(symbol: str, name: str) -> set[str]:
+    """Symbol + name needles for matching news headlines.
+
+    If the first word of the company name is shared by other names in
+    the universe (Tata, Bajaj, Adani, Mahindra ...) we use the first
+    TWO words instead, so news about one group company never spills
+    into another's feed.
+    """
+    needles = {symbol.lower(), name.lower()}
+    parts = name.split()
+    if not parts:
+        return needles
+    first = parts[0].lower()
+    if _first_word_counts().get(first, 0) <= 1:
+        needles.add(first)
+    elif len(parts) >= 2:
+        needles.add(" ".join(parts[:2]).lower())
+    return needles
 
 
 class RSSNews(NewsProvider):
@@ -132,7 +172,7 @@ class RSSNews(NewsProvider):
 
         stock = universe.get(symbol)
         name = stock.name if stock else symbol
-        needles = {symbol.lower(), name.lower(), name.split()[0].lower()}
+        needles = build_needles(symbol, name)
         pattern = re.compile(r"|".join(re.escape(n) for n in needles), re.I)
 
         items: list[NewsItem] = []

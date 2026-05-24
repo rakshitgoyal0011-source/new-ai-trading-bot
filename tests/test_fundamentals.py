@@ -58,6 +58,48 @@ def test_engine_best_in_class_scores_high():
     assert res.sub_scores
 
 
+def test_distress_flag_fires_when_interest_coverage_is_zero():
+    """Regression: `(data.interest_coverage or 100) < 3` treated 0 as 100
+    and silently missed the highly-levered-with-weak-coverage flag."""
+    target = FundamentalData(
+        symbol="T", available=True,
+        pe=20.0, pb=3.0, roe=5.0,
+        debt_to_equity=3.5, interest_coverage=0.0,
+        operating_margin=5.0, net_margin=2.0,
+        revenue_growth=-5.0,
+    )
+    peers = [
+        FundamentalData(symbol="A", available=True, pe=15.0, pb=2.0, roe=15.0,
+                        debt_to_equity=0.5, interest_coverage=10.0,
+                        operating_margin=12.0, net_margin=8.0,
+                        revenue_growth=10.0),
+    ]
+    res = FundamentalEngine().analyze("T", target, peers)
+    assert any("highly levered" in f for f in res.quality_flags)
+
+
+def test_yfinance_normalises_debt_to_equity_from_percent(monkeypatch, tmp_path):
+    """Regression: yfinance returns debtToEquity as a percentage
+    (150 == 1.5x); the provider used to store the raw value."""
+    import sys
+    from unittest.mock import MagicMock
+
+    mock_ticker = MagicMock()
+    mock_ticker.info = {
+        "trailingPE": 20.0, "priceToBook": 3.0,
+        "debtToEquity": 150.0,
+        "returnOnEquity": 0.15,
+    }
+    mock_yf = MagicMock()
+    mock_yf.Ticker.return_value = mock_ticker
+    monkeypatch.setitem(sys.modules, "yfinance", mock_yf)
+
+    from data.fundamentals import YFinanceFundamentals
+    data = YFinanceFundamentals()._fetch_uncached("RELIANCE")
+    assert data.debt_to_equity == 1.5
+    assert data.available is True
+
+
 def test_engine_worst_in_class_scores_low():
     target = FundamentalData(
         symbol="T", available=True,

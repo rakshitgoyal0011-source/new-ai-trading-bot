@@ -105,7 +105,11 @@ class FundamentalEngine:
             flags.append("promoter pledge above 25% - quality flag")
         if (data.revenue_growth or 0) > 0 and (data.roe or 0) > 12:
             flags.append("growing and profitable")
-        if (data.debt_to_equity or 0) > 2 and (data.interest_coverage or 100) < 3:
+        if (
+            data.debt_to_equity is not None and data.debt_to_equity > 2
+            and data.interest_coverage is not None
+            and data.interest_coverage < 3
+        ):
             flags.append("highly levered with weak coverage")
 
         # quality sub-score: positive flags push up, negative push down

@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from config import universe
+from data._seeding import deterministic_seed
 from monitoring.logging import get_logger
 
 log = get_logger("data.fundamentals")
@@ -61,7 +62,7 @@ class DemoFundamentals(FundamentalsProvider):
     name = "demo"
 
     def fetch(self, symbol: str) -> FundamentalData:
-        rng = np.random.default_rng(abs(hash("fa_" + symbol)) % (2**31))
+        rng = np.random.default_rng(deterministic_seed("fa_", symbol))
         stock = universe.get(symbol)
         return FundamentalData(
             symbol=symbol,
@@ -125,6 +126,9 @@ class YFinanceFundamentals(FundamentalsProvider):
         rev_g = info.get("revenueGrowth")
         eps_g = info.get("earningsGrowth")
         div_y = info.get("dividendYield")
+        # yfinance reports debtToEquity as a percentage (150 == 1.5x), not
+        # the ratio our engine + UI expect; normalise to ratio here.
+        de_raw = info.get("debtToEquity")
 
         return FundamentalData(
             symbol=symbol,
@@ -132,7 +136,7 @@ class YFinanceFundamentals(FundamentalsProvider):
             pb=info.get("priceToBook"),
             peg=info.get("pegRatio"),
             roe=(roe * 100.0) if roe is not None else None,
-            debt_to_equity=info.get("debtToEquity"),
+            debt_to_equity=(de_raw / 100.0) if de_raw is not None else None,
             revenue_growth=(rev_g * 100.0) if rev_g is not None else None,
             eps_growth=(eps_g * 100.0) if eps_g is not None else None,
             operating_margin=(margin_op * 100.0) if margin_op is not None else None,
